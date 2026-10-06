@@ -129,21 +129,31 @@ class LyricsEngine:
     def clean_song_title(cls, title: str) -> str:
         """
         Cleans video/track titles by removing fluff like:
-        [OFFICIAL MUSIC VIDEO], (Lyric Video), M/V, Audio, ft., Prod by...
+        [OFFICIAL MUSIC VIDEO], (Lyric Video), M/V, Audio, ft., Prod by,
+        speed up, sped up, slowed, reverb, remix, nightcore, etc.
         """
         if not title:
             return ""
         # Remove bracketed text [Official MV], (Lyrics), etc.
-        title = re.sub(r'\[.*?\]|\(.*?\)', '', title)
-        # Remove common keywords
+        title = re.sub(r'\[.*?\]|\(.*?\)', ' ', title)
+
+        # Remove common fluff words (works even without brackets)
         keywords = [
-            r'official\s+music\s+video', r'official\s+mv', r'music\s+video',
-            r'lyric\s+video', r'official\s+audio', r'audio\s+official',
-            r'official\s+video', r'mv\b', r'm\/v\b', r'video\s+lyric',
-            r'visualizer', r'prod\.?\s*by.*', r'feat\.?.*', r'ft\.?.*'
+            r'\bofficial\s+music\s+video\b', r'\bofficial\s+mv\b', r'\bmusic\s+video\b',
+            r'\blyric\s+video\b', r'\bofficial\s+audio\b', r'\baudio\s+official\b',
+            r'\bofficial\s+video\b', r'\bmv\b', r'\bm\/v\b', r'\bvideo\s+lyric\b',
+            r'\bvisualizer\b', r'\bprod\.?\s*by.*', r'\bfeat\.?.*', r'\bft\.?.*',
+            r'\bspeed\s*up\b', r'\bsped\s*up\b', r'\bslowed(?:\s*\+?\s*reverb)?\b',
+            r'\breverb\b', r'\bnightcore\b', r'\bdaycore\b', r'\blo-?fi\b',
+            r'\bremix\b', r'\bvip\s*remix\b', r'\bclub\s*mix\b', r'\bextended(?:\s*mix)?\b',
+            r'\bbootleg\b', r'\bedit\b', r'\bflip\b', r'\bmashup\b',
+            r'\btik\s*tok(?:\s*version|\s*remix)?\b', r'\bacoustic(?:\s*version)?\b',
+            r'\bcover\b', r'\binstrumental\b', r'\bkaraoke\b',
+            r'\blive(?:\s*version|\s*session)?\b', r'\bbass\s*boosted\b',
+            r'\bfull\s*version\b', r'\bfull\s*audio\b', r'\bexplicit\b', r'\bclean\b'
         ]
         for kw in keywords:
-            title = re.sub(kw, '', title, flags=re.IGNORECASE)
+            title = re.sub(kw, ' ', title, flags=re.IGNORECASE)
 
         # Remove extra separators like |, -, / at edges
         title = re.sub(r'[\s\|\-\:\/]+$', '', title)
@@ -418,31 +428,47 @@ class LyricsEngine:
         """
         info = cls.extract_info_from_url(url_or_query)
         query = info["query"]
+        clean_title = info.get("clean_title", "")
+        artist = info.get("artist", "")
+        raw_title = info.get("raw_title", "")
 
+        # Try primary query (artist + clean_title)
         success, results = cls.search_synced_lyrics(query)
-        if not success or not results:
-            # Try searching with clean_title if different from query
-            if info.get("clean_title") and info.get("clean_title") != query:
-                success, results = cls.search_synced_lyrics(info["clean_title"])
 
+        # Try clean_title alone (e.g., "earrings" if query was "earrings knox")
         if not success or not results:
-            # Try searching with artist + clean_title if available
-            if info.get("artist") and info.get("clean_title"):
-                comb_query = f"{info['artist']} {info['clean_title']}"
-                if comb_query != query:
+            if clean_title and clean_title != query:
+                success, results = cls.search_synced_lyrics(clean_title)
+
+        # Try artist + clean_title combination if different
+        if not success or not results:
+            if artist and clean_title:
+                comb_query = f"{artist} {clean_title}"
+                if comb_query != query and comb_query != clean_title:
                     success, results = cls.search_synced_lyrics(comb_query)
 
+        # Try raw_title (unstripped slug / original title)
         if not success or not results:
-            # Try searching with raw title if cleaned title didn't yield results
-            if info.get("raw_title") and info["raw_title"] != query:
-                success, results = cls.search_synced_lyrics(info["raw_title"])
+            if raw_title and raw_title != query and raw_title != clean_title:
+                success, results = cls.search_synced_lyrics(raw_title)
+
+        # Try artist alone (for artist-only profile URLs or very short titles)
+        if not success or not results:
+            if artist and artist != query and artist != clean_title and len(artist) > 2:
+                success, results = cls.search_synced_lyrics(artist)
 
         if not success or not results:
+            # Return with candidate list from broadest possible search for modal
+            fallback_q = clean_title or query or raw_title
+            if fallback_q:
+                _, broad_results = cls.search_synced_lyrics(fallback_q)
+            else:
+                broad_results = []
             return False, {
                 "message": f"Không tìm thấy lời bài hát đồng bộ cho: '{query}'. Bạn có thể nhập file .lrc hoặc tự dán lời bài hát.",
                 "query": query,
                 "info": info,
-                "candidates": []
+                "candidates": broad_results[:10]
             }
 
         # Rank candidates by relevance
